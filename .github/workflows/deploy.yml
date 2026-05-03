@@ -19,6 +19,20 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-east-1
     
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Build Lambda Dependencies
+      run: |
+        cd app/lambda
+        pip install -r requirements.txt -t python/
+        cd python
+        zip -r ../../terraform/lambda_layer.zip .
+        cd ..
+        rm -rf python
+    
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:

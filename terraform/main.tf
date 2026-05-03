@@ -67,9 +67,49 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "logs:PutLogEvents"
         ]
         Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
       }
     ]
   })
+}
+
+resource "null_resource" "install_dependencies" {
+  provisioner "local-exec" {
+    command = <<EOF
+      cd ../app/lambda
+      pip install -r requirements.txt -t python/
+      cd python
+      zip -r ../../terraform/lambda_layer.zip .
+      cd ..
+      rm -rf python
+    EOF
+  }
+
+  triggers = {
+    requirements = filemd5("../app/lambda/requirements.txt")
+  }
+}
+
+resource "aws_lambda_layer_version" "dependencies" {
+  filename            = "lambda_layer.zip"
+  layer_name          = "${var.project_name}-dependencies"
+  compatible_runtimes = ["python3.11"]
+  
+  depends_on = [null_resource.install_dependencies]
 }
 
 data "archive_file" "lambda_zip" {
@@ -85,12 +125,20 @@ resource "aws_lambda_function" "todo_api" {
   handler         = "todo_handler.lambda_handler"
   runtime         = "python3.11"
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  timeout          = 30
+  memory_size      = 256
 
   environment {
     variables = {
       TABLE_NAME = aws_dynamodb_table.todos.name
     }
   }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  layers = [aws_lambda_layer_version.dependencies.arn]
 }
 
 resource "aws_cloudwatch_log_group" "lambda_logs" {
@@ -188,12 +236,44 @@ resource "aws_lambda_function" "dynatrace_forwarder" {
   handler         = "dynatrace_forwarder.lambda_handler"
   runtime         = "python3.11"
   source_code_hash = data.archive_file.dynatrace_forwarder_zip.output_base64sha256
+  timeout          = 60
 
   environment {
     variables = {
       DYNATRACE_URL   = var.dynatrace_url
       DYNATRACE_TOKEN = var.dynatrace_token
     }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+}
+
+data "archive_file" "dynatrace_metrics_forwarder_zip" {
+  type        = "zip"
+  source_file = "../app/lambda/dynatrace_metrics_forwarder.py"
+  output_path = "dynatrace_metrics_forwarder.zip"
+}
+
+resource "aws_lambda_function" "dynatrace_metrics_forwarder" {
+  filename         = data.archive_file.dynatrace_metrics_forwarder_zip.output_path
+  function_name    = "${var.project_name}-dynatrace-metrics-forwarder"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "dynatrace_metrics_forwarder.lambda_handler"
+  runtime         = "python3.11"
+  source_code_hash = data.archive_file.dynatrace_metrics_forwarder_zip.output_base64sha256
+  timeout          = 60
+
+  environment {
+    variables = {
+      DYNATRACE_URL   = var.dynatrace_url
+      DYNATRACE_TOKEN = var.dynatrace_token
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
   }
 }
 
@@ -229,6 +309,103 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   }
 }
 
+resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
+  alarm_name          = "${var.project_name}-lambda-duration"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "Duration"
+  namespace           = "AWS/Lambda"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "3000"
+  alarm_description   = "Alert when Lambda duration is high"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    FunctionName = aws_lambda_function.todo_api.function_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda_throttles" {
+  alarm_name          = "${var.project_name}-lambda-throttles"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "Throttles"
+  namespace           = "AWS/Lambda"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "10"
+  alarm_description   = "Alert when Lambda is throttled"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    FunctionName = aws_lambda_function.todo_api.function_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "dynamodb_errors" {
+  alarm_name          = "${var.project_name}-dynamodb-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "SystemErrors"
+  namespace           = "AWS/DynamoDB"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "5"
+  alarm_description   = "Alert when DynamoDB errors occur"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    TableName = aws_dynamodb_table.todos.name
+  }
+}
+
+resource "aws_cloudwatch_dashboard" "todo_app" {
+  dashboard_name = "${var.project_name}-dashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Invocations", { stat = "Sum", label = "Invocations" }],
+            [".", "Errors", { stat = "Sum", label = "Errors" }],
+            [".", "Duration", { stat = "Average", label = "Avg Duration" }]
+          ]
+          period = 300
+          region = var.aws_region
+          title  = "Lambda Metrics"
+        }
+      },
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["TodoApp", "RequestDuration", { stat = "Average" }],
+            [".", "RequestCount", { stat = "Sum" }]
+          ]
+          period = 300
+          region = var.aws_region
+          title  = "Custom Application Metrics"
+        }
+      },
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/DynamoDB", "ConsumedReadCapacityUnits", { stat = "Sum" }],
+            [".", "ConsumedWriteCapacityUnits", { stat = "Sum" }]
+          ]
+          period = 300
+          region = var.aws_region
+          title  = "DynamoDB Metrics"
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_sns_topic" "alerts" {
   name = "${var.project_name}-alerts"
 }
@@ -237,4 +414,18 @@ resource "aws_sns_topic_subscription" "email" {
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
   endpoint  = var.alert_email
+}
+
+resource "aws_sns_topic_subscription" "dynatrace_metrics" {
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.dynatrace_metrics_forwarder.arn
+}
+
+resource "aws_lambda_permission" "sns_metrics" {
+  statement_id  = "AllowSNSInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dynatrace_metrics_forwarder.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.alerts.arn
 }

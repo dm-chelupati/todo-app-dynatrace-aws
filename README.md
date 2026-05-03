@@ -1,16 +1,48 @@
 # Todo List Application
 
-Serverless todo list app with AWS Lambda, DynamoDB, S3, and Dynatrace logging.
+Serverless todo list app with AWS Lambda, DynamoDB, S3, and comprehensive Dynatrace observability.
 
 ## Architecture
 
 - **Frontend**: S3 static website
 - **API**: API Gateway + Lambda (Python)
 - **Database**: DynamoDB
-- **Logging**: CloudWatch → Dynatrace
-- **Alerts**: CloudWatch Alarms → SNS
+- **Logging**: CloudWatch → Dynatrace (structured JSON logs)
+- **Metrics**: CloudWatch custom metrics → Dynatrace
+- **Tracing**: AWS X-Ray (distributed tracing)
+- **Alerts**: CloudWatch Alarms → SNS → Email + Dynatrace
 - **IaC**: Terraform
 - **CI/CD**: GitHub Actions
+
+## Observability Features
+
+### Logs Sent to Dynatrace
+✅ All Lambda invocation logs (structured JSON)
+✅ Request/response details with request IDs
+✅ Error logs with stack traces
+✅ DynamoDB operation logs
+✅ Custom application events
+✅ Log levels (INFO, ERROR, DEBUG)
+
+### Metrics Sent to Dynatrace
+✅ Lambda invocations, errors, duration, throttles
+✅ Custom application metrics (request duration, count)
+✅ DynamoDB read/write capacity
+✅ API Gateway metrics
+✅ CloudWatch alarm states
+
+### Traces
+✅ AWS X-Ray distributed tracing enabled
+✅ End-to-end request tracing
+✅ DynamoDB operation tracing
+✅ Lambda cold start tracking
+
+### Alerts
+✅ Lambda errors (>5 in 5 minutes)
+✅ Lambda high duration (>3 seconds)
+✅ Lambda throttles (>10 in 5 minutes)
+✅ DynamoDB system errors
+✅ All alerts sent to email + Dynatrace
 
 ## Setup
 
@@ -79,9 +111,25 @@ Serverless todo list app with AWS Lambda, DynamoDB, S3, and Dynatrace logging.
 
 ## Monitoring
 
-- **Dynatrace**: View application logs in Dynatrace UI
-- **CloudWatch**: Lambda metrics and alarms
-- **SNS**: Email alerts when errors exceed threshold (5 errors in 5 minutes)
+### Dynatrace
+- **Logs**: All application logs with structured JSON format
+- **Metrics**: Custom application metrics and CloudWatch metrics
+- **Traces**: AWS X-Ray traces (configure Dynatrace AWS integration)
+- **Alerts**: CloudWatch alarm notifications
+
+### AWS CloudWatch
+- **Dashboard**: `https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards`
+- **X-Ray Traces**: `https://console.aws.amazon.com/xray/home`
+- **Logs**: `/aws/lambda/todo-app-api`
+- **Alarms**: Lambda errors, duration, throttles, DynamoDB errors
+
+### Dynatrace Setup
+1. Create API token with permissions:
+   - `logs.ingest` - For log ingestion
+   - `metrics.ingest` - For metrics ingestion
+2. Configure AWS integration in Dynatrace for X-Ray traces
+3. Set up log processing rules in Dynatrace UI
+4. Create custom dashboards for todo app metrics
 
 ## API Endpoints
 
