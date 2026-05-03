@@ -1,169 +1,121 @@
-# AWS DevOps Agent with Dynatrace Alert Trigger
+# Dynatrace Alert Filtering for DevOps Agent
 
-variable "github_token" {
-  description = "GitHub personal access token"
-  type        = string
-  sensitive   = true
-}
+## Problem: Too Many Alerts
 
-variable "github_repo_owner" {
-  description = "GitHub repository owner"
-  type        = string
-  default     = "dm-chelupati"
-}
+Without filtering, DevOps Agent would be triggered for:
+- ❌ Every minor issue
+- ❌ Known problems
+- ❌ Maintenance windows
+- ❌ Non-critical warnings
+- ❌ Transient errors
 
-variable "github_repo_name" {
-  description = "GitHub repository name"
-  type        = string
-  default     = "todo-app-dynatrace-aws"
-}
+## Solution: Multi-Layer Filtering
 
-# IAM Role for DevOps Agent
-resource "aws_iam_role" "devops_agent_role" {
-  name = "${var.project_name}-devops-agent-role"
+### Layer 1: Dynatrace Alerting Profile (BEST)
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "devops-agent.amazonaws.com"
-      }
-    }]
-  })
-}
+Filter alerts BEFORE sending to DevOps Agent.
 
-# IAM Policy for DevOps Agent
-resource "aws_iam_role_policy" "devops_agent_policy" {
-  name = "${var.project_name}-devops-agent-policy"
-  role = aws_iam_role.devops_agent_role.id
+#### Create Custom Alerting Profile
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:*",
-          "xray:*",
-          "cloudwatch:*",
-          "dynamodb:Describe*",
-          "dynamodb:Get*",
-          "lambda:Get*",
-          "lambda:List*",
-          "ec2:Describe*",
-          "apigateway:GET"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
+**In Dynatrace Console:**
 
-# AWS DevOps Agent
-resource "aws_devops_agent" "main" {
-  name        = "${var.project_name}-agent"
-  description = "DevOps agent triggered by Dynatrace alerts"
+1. **Settings** → **Alerting** → **Alerting profiles**
+2. Click **Add alerting profile**
+3. Name: `DevOps Agent - Critical Only`
+
+#### Configuration:
+
+```yaml
+Profile Name: DevOps Agent - Critical Only
+
+# Severity Rules
+Severity filters:
+  - ERROR (include)
+  - CRITICAL (include)
+  - RESOURCE_CONTENTION (include)
+  - PERFORMANCE (exclude unless critical)
+  - AVAILABILITY (include)
+  - CUSTOM_ALERT (include)
+  - INFO (exclude)
+
+# Service Filters
+Management zone filters:
+  - Include: "Production"
+  - Include: "todo-app"
+  - Exclude: "Development"
+  - Exclude: "Testing"
+
+# Problem Type Filters
+Problem type:
+  - Include: "Error"
+  - Include: "Slowdown" (if duration > 5 min)
+  - Include: "Resource exhaustion"
+  - Exclude: "Infrastructure" (unless critical)
+
+# Entity Filters
+Impacted entities:
+  - Include: AWS Lambda functions with tag "monitored:true"
+  - Include: DynamoDB tables with tag "production:true"
+  - Exclude: Test resources
+
+# Time-based Filters
+Delay notification:
+  - Wait 2 minutes before sending (filters transient issues)
   
-  role_arn = aws_iam_role.devops_agent_role.arn
+Send resolved notifications:
+  - No (don't spam when fixed)
 
-  # GitHub Integration
-  source_control {
-    type  = "GITHUB"
-    owner = var.github_repo_owner
-    repo  = var.github_repo_name
-    token = var.github_token
-  }
+# Tag-based Filters
+Required tags:
+  - service:todo-app
+  - environment:production
 
-  # Agent capabilities
-  capabilities {
-    log_analysis        = true
-    trace_analysis      = true
-    metric_analysis     = true
-    code_fix_generation = true
-    issue_creation      = true
-    pr_creation         = true
-  }
+Excluded tags:
+  - maintenance:true
+  - known-issue:true
+  - ignore-alerts:true
+```
 
-  # What to monitor
-  monitoring_sources {
-    cloudwatch_logs = [
-      "/aws/lambda/${var.project_name}-api"
+#### Apply to Webhook:
+
+1. **Settings** → **Integration** → **Problem notifications**
+2. Find your **AWS DevOps Agent** webhook
+3. **Alerting profile**: Select `DevOps Agent - Critical Only`
+4. **Save**
+
+### Layer 2: Dynatrace Problem Filters
+
+**Advanced filtering in webhook configuration:**
+
+```json
+{
+  "filter": {
+    "severityLevel": ["ERROR", "CRITICAL"],
+    "impactLevel": ["SERVICES", "APPLICATION"],
+    "managementZones": ["Production"],
+    "tags": [
+      {
+        "context": "ENVIRONMENT",
+        "key": "service",
+        "value": "todo-app"
+      }
+    ],
+    "excludeTags": [
+      {
+        "key": "maintenance"
+      },
+      {
+        "key": "known-issue"
+      }
     ]
-    xray_traces = true
-  }
-
-  # Dynatrace Integration
-  external_monitoring {
-    dynatrace {
-      url   = var.dynatrace_url
-      token = var.dynatrace_token
-      fetch_logs    = true
-      fetch_metrics = true
-    }
-  }
-
-  # Webhook endpoint for Dynatrace
-  webhook {
-    enabled = true
-    authentication {
-      type = "TOKEN"
-      token_secret_arn = aws_secretsmanager_secret.webhook_token.arn
-    }
-  }
-
-  # Agent instructions
-  instructions = <<-EOT
-    You are monitoring a serverless todo application.
-    
-    When triggered by Dynatrace alert:
-    1. Fetch problem details from Dynatrace
-    2. Read CloudWatch logs for the affected Lambda
-    3. Analyze X-Ray traces for failed requests
-    4. Review code in GitHub repository
-    5. Identify root cause
-    6. Create GitHub issue with:
-       - Dynatrace alert details
-       - Root cause analysis
-       - Relevant logs and traces
-       - Suggested code fix
-    7. If >80% confident, create PR with fix
-  EOT
-
-  tags = {
-    Name = "${var.project_name}-devops-agent"
   }
 }
+```
 
-# Webhook authentication token
-resource "random_password" "webhook_token" {
-  length  = 32
-  special = true
-}
+### Layer 3: DevOps Agent Configuration
 
-resource "aws_secretsmanager_secret" "webhook_token" {
-  name = "${var.project_name}-devops-agent-webhook-token"
-}
+Add filtering logic in the agent itself:
 
-resource "aws_secretsmanager_secret_version" "webhook_token" {
-  secret_id     = aws_secretsmanager_secret.webhook_token.id
-  secret_string = random_password.webhook_token.result
-}
-
-# Outputs
-output "devops_agent_webhook_url" {
-  description = "Webhook URL for Dynatrace to call"
-  value       = aws_devops_agent.main.webhook_url
-}
-
-output "devops_agent_webhook_token" {
-  description = "Webhook authentication token (add to Dynatrace)"
-  value       = random_password.webhook_token.result
-  sensitive   = true
-}
-
-output "devops_agent_arn" {
-  description = "DevOps Agent ARN"
-  value       = aws_devops_agent.main.arn
-}
+<function_calls>
+<invoke name="fsReplace">
+<parameter name="diffs">[{"newStr": "  # Webhook endpoint for Dynatrace\n  webhook {\n    enabled = true\n    authentication {\n      type = \"TOKEN\"\n      token_secret_arn = aws_secretsmanager_secret.webhook_token.arn\n    }\n    \n    # Agent-side filtering\n    filters {\n      # Only process specific severities\n      severity_levels = [\"ERROR\", \"CRITICAL\"]\n      \n      # Only process specific problem types\n      problem_types = [\n        \"ERROR_EVENT\",\n        \"SLOWDOWN\",\n        \"RESOURCE_EXHAUSTION\",\n        \"AVAILABILITY_EVENT\"\n      ]\n      \n      # Minimum impact level\n      min_impact_level = \"SERVICES\"\n      \n      # Required tags\n      required_tags = {\n        \"service\" = \"todo-app\"\n        \"environment\" = \"production\"\n      }\n      \n      # Excluded tags\n      excluded_tags = [\n        \"maintenance\",\n        \"known-issue\",\n        \"ignore-alerts\"\n      ]\n      \n      # Rate limiting\n      rate_limit {\n        max_alerts_per_hour = 10\n        max_alerts_per_day  = 50\n      }\n      \n      # Deduplication\n      deduplication {\n        enabled = true\n        window_minutes = 30  # Don't process same problem within 30 min\n      }\n    }\n  }", "oldStr": "  # Webhook endpoint for Dynatrace\n  webhook {\n    enabled = true\n    authentication {\n      type = \"TOKEN\"\n      token_secret_arn = aws_secretsmanager_secret.webhook_token.arn\n    }\n  }"}]
