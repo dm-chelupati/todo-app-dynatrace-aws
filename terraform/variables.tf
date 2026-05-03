@@ -25,3 +25,9 @@ variable "alert_email" {
   description = "Email for CloudWatch alerts"
   type        = string
 }
+
+variable "github_token" {
+  description = "GitHub personal access token for DevOps Agent"
+  type        = string
+  sensitive   = true
+}
