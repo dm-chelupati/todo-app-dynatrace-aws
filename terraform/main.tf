@@ -187,10 +187,9 @@ resource "null_resource" "install_dependencies" {
   provisioner "local-exec" {
     command = <<EOF
       cd ../app/lambda
+      mkdir -p python
       pip install -r requirements.txt -t python/
-      cd python
-      zip -r ../../terraform/lambda_layer.zip .
-      cd ..
+      zip -r ../../terraform/lambda_layer.zip python/
       rm -rf python
     EOF
   }
