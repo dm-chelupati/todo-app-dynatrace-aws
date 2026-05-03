@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Todo List</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+        input[type="text"] { width: 70%; padding: 10px; font-size: 16px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        .todo-item { display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #ddd; }
+        .todo-item input[type="checkbox"] { margin-right: 10px; }
+        .todo-item.completed { text-decoration: line-through; opacity: 0.6; }
+        .delete-btn { margin-left: auto; background: #ff4444; color: white; border: none; padding: 5px 10px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Todo List</h1>
+    <div>
+        <input type="text" id="todoInput" placeholder="Enter a new todo">
+        <button onclick="addTodo()">Add</button>
+    </div>
+    <div id="todoList"></div>
+
+    <script>
+        const API_URL = 'API_GATEWAY_URL_PLACEHOLDER';
+
+        async function loadTodos() {
+            const response = await fetch(`${API_URL}/todos`);
+            const todos = await response.json();
+            displayTodos(todos);
+        }
+
+        function displayTodos(todos) {
+            const list = document.getElementById('todoList');
+            list.innerHTML = todos.map(todo => `
+                <div class="todo-item ${todo.completed ? 'completed' : ''}">
+                    <input type="checkbox" ${todo.completed ? 'checked' : ''} 
+                           onchange="toggleTodo('${todo.id}', ${!todo.completed})">
+                    <span>${todo.title}</span>
+                    <button class="delete-btn" onclick="deleteTodo('${todo.id}')">Delete</button>
+                </div>
+            `).join('');
+        }
+
+        async function addTodo() {
+            const input = document.getElementById('todoInput');
+            const title = input.value.trim();
+            if (!title) return;
+
+            await fetch(`${API_URL}/todos`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title})
+            });
+
+            input.value = '';
+            loadTodos();
+        }
+
+        async function toggleTodo(id, completed) {
+            await fetch(`${API_URL}/todos/${id}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({completed})
+            });
+            loadTodos();
+        }
+
+        async function deleteTodo(id) {
+            await fetch(`${API_URL}/todos/${id}`, {method: 'DELETE'});
+            loadTodos();
+        }
+
+        loadTodos();
+    </script>
+</body>
+</html>
