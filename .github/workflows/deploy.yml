@@ -29,8 +29,9 @@ jobs:
         cd app/lambda
         mkdir -p python
         pip install -r requirements.txt -t python/
+        mkdir -p ../../terraform
         cd python
-        zip -r ../../terraform/lambda_layer.zip .
+        zip -r ../../../terraform/lambda_layer.zip .
         cd ..
         rm -rf python
     
